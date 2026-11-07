@@ -56,15 +56,27 @@ jobs:
           set -euxo pipefail
           mkdir -p /out /tmp/deps && cd /tmp/deps
 
+          # Builds a hyprwm repo with CMake or meson (auto-detected),
+          # installs it into the system (for the next builds) and into /out (for the .deb)
           build_dep () {
             local repo="$1"
             git clone --depth 1 "https://github.com/hyprwm/${repo}.git"
             cd "$repo"
-            cmake -S . -B build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
-            cmake --build build -j"$(nproc)"
-            cmake --install build                  # needed to build the next ones
-            DESTDIR=/out cmake --install build     # staged for the .deb
+            if [ -f CMakeLists.txt ]; then
+              cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+              cmake --build build -j"$(nproc)"
+              cmake --install build
+              DESTDIR=/out cmake --install build
+            elif [ -f meson.build ]; then
+              meson setup build --prefix=/usr --buildtype=release
+              meson compile -C build
+              meson install -C build
+              DESTDIR=/out meson install -C build --no-rebuild
+            else
+              echo "No CMakeLists.txt or meson.build found in ${repo}" >&2
+              exit 1
+            fi
             cd ..
           }
 
@@ -75,14 +87,7 @@ jobs:
           build_dep hyprgraphics
           build_dep hyprcursor
           build_dep aquamarine
-
-          # hyprland-protocols uses meson
-          git clone --depth 1 https://github.com/hyprwm/hyprland-protocols.git
-          cd hyprland-protocols
-          meson setup build --prefix=/usr
-          meson install -C build
-          DESTDIR=/out meson install -C build --no-rebuild
-          cd ..
+          build_dep hyprland-protocols
 
           ldconfig
 
@@ -124,37 +129,38 @@ jobs:
           LIBDIR=$(dirname "$(find "$PKGDIR" -name 'libhyprutils.so*' | head -n1)")
           cd /tmp/shl
           SHLIBS=$(dpkg-shlibdeps -O --ignore-missing-info -l"$LIBDIR" $ELF_FILES 2>/dev/null \
-                   | sed -n 's/^shlibs:Depends=//p')
+                   | sed -n 's/^shlibs:Depends=//p' || true)
           cd /
 
+          # Write the control file (Depends only added if it is not empty)
           mkdir -p "$PKGDIR/DEBIAN"
-          cat > "$PKGDIR/DEBIAN/control" <<EOF
-          Package: hyprland
-          Version: ${DEB_VERSION}
-          Architecture: arm64
-          Maintainer: Commander-z3r0
-          Section: x11
-          Priority: optional
-          Depends: ${SHLIBS}
-          Recommends: xwayland, seatd
-          Description: Hyprland ${HYPRLAND_VERSION} - dynamic tiling Wayland compositor
-           Custom arm64 build of Hyprland bundled with hyprutils, hyprlang,
-           hyprgraphics, hyprcursor, aquamarine and hyprland-protocols.
-          EOF
-          # Remove the leading indentation introduced by the YAML block
-          sed -i 's/^          //' "$PKGDIR/DEBIAN/control"
+          {
+            echo "Package: hyprland"
+            echo "Version: ${DEB_VERSION}"
+            echo "Architecture: arm64"
+            echo "Maintainer: ${GITHUB_REPOSITORY_OWNER} <noreply@users.noreply.github.com>"
+            echo "Section: x11"
+            echo "Priority: optional"
+            if [ -n "${SHLIBS}" ]; then echo "Depends: ${SHLIBS}"; fi
+            echo "Recommends: xwayland, seatd"
+            echo "Description: Hyprland ${HYPRLAND_VERSION} - dynamic tiling Wayland compositor"
+            echo " Custom arm64 build of Hyprland bundled with hyprutils, hyprlang,"
+            echo " hyprgraphics, hyprcursor, aquamarine and hyprland-protocols."
+          } > "$PKGDIR/DEBIAN/control"
 
-          # Make sure the dynamic linker cache is refreshed on install/remove
+          # Refresh the dynamic linker cache on install/remove
           printf '#!/bin/sh\nset -e\nldconfig\n' > "$PKGDIR/DEBIAN/postinst"
           cp "$PKGDIR/DEBIAN/postinst" "$PKGDIR/DEBIAN/postrm"
           chmod 755 "$PKGDIR/DEBIAN/postinst" "$PKGDIR/DEBIAN/postrm"
+
+          cat "$PKGDIR/DEBIAN/control"
 
           dpkg-deb --root-owner-group --build "$PKGDIR" \
             "/tmp/hyprland_${DEB_VERSION}_arm64.deb"
 
           dpkg-deb --info "/tmp/hyprland_${DEB_VERSION}_arm64.deb"
 
-      - name: Smoke test (install the .deb in a clean state)
+      - name: Smoke test (install the .deb)
         run: |
           set -euxo pipefail
           apt-get install -y /tmp/hyprland_*_arm64.deb
