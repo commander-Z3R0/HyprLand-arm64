@@ -18,7 +18,7 @@ on:
       create_release:
         description: "Publish the .deb as a GitHub Release"
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
