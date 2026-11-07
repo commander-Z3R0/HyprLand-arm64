@@ -45,7 +45,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates git curl wget xz-utils tar file pkg-config dpkg-dev \
+            ca-certificates git curl wget jq xz-utils tar file pkg-config dpkg-dev \
             build-essential cmake ninja-build meson gettext gettext-base \
             glslang-tools hwdata \
             libwayland-dev wayland-protocols libffi-dev libxml2-dev libglib2.0-dev \
@@ -100,17 +100,53 @@ jobs:
           meson install -C build
           pkg-config --modversion wayland-protocols
 
-      - name: Build hyprwm dependencies
+      # Downloaded BEFORE the dependencies: its flake.lock tells us the exact
+      # revision of every hypr* library that this Hyprland release was built with.
+      - name: Download Hyprland (release tarball, submodules included)
+        run: |
+          set -euxo pipefail
+          cd /tmp
+          curl -fL -o hypr.tar.gz \
+            "https://github.com/hyprwm/Hyprland/releases/download/${HYPRLAND_VERSION}/source-${HYPRLAND_VERSION}.tar.gz"
+          mkdir hyprland && tar -xzf hypr.tar.gz -C hyprland --strip-components=1
+          ls -la /tmp/hyprland/flake.lock
+
+      - name: Build hyprwm dependencies (pinned via flake.lock)
         run: |
           set -euxo pipefail
           mkdir -p /out /tmp/deps && cd /tmp/deps
+          LOCK=/tmp/hyprland/flake.lock
 
-          # Builds a hyprwm repo with CMake or meson (auto-detected),
-          # installs it into the system (for the next builds) and into /out (for the .deb)
+          # Prints the locked git revision of a flake input (empty if not found)
+          get_rev () {
+            local node
+            node=$(jq -r --arg n "$1" \
+              '(.nodes.root.inputs[$n] // empty) | if type=="array" then .[0] else . end' "$LOCK")
+            if [ -n "$node" ]; then
+              jq -r --arg k "$node" '.nodes[$k].locked.rev // empty' "$LOCK"
+            fi
+          }
+
+          # Builds a hyprwm repo at the revision pinned by Hyprland's flake.lock
+          # (CMake or meson auto-detected), installs it into the system (for the next
+          # builds) and into /out (for the .deb)
           build_dep () {
             local repo="$1"
-            git clone --depth 1 "https://github.com/hyprwm/${repo}.git"
-            cd "$repo"
+            local rev
+            rev=$(get_rev "$repo")
+            mkdir "$repo" && cd "$repo"
+            git init -q
+            git remote add origin "https://github.com/hyprwm/${repo}.git"
+            if [ -n "$rev" ]; then
+              echo ">>> ${repo}: pinned to ${rev}"
+              git fetch -q --depth 1 origin "$rev"
+              git checkout -q FETCH_HEAD
+            else
+              echo ">>> ${repo}: not found in flake.lock, using default branch"
+              git fetch -q --depth 1 origin HEAD
+              git checkout -q FETCH_HEAD
+            fi
+
             if [ -f CMakeLists.txt ]; then
               cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
@@ -139,14 +175,6 @@ jobs:
           build_dep hyprland-protocols
 
           ldconfig
-
-      - name: Download Hyprland (release tarball, submodules included)
-        run: |
-          set -euxo pipefail
-          cd /tmp
-          curl -fL -o hypr.tar.gz \
-            "https://github.com/hyprwm/Hyprland/releases/download/${HYPRLAND_VERSION}/source-${HYPRLAND_VERSION}.tar.gz"
-          mkdir hyprland && tar -xzf hypr.tar.gz -C hyprland --strip-components=1
 
       - name: Build Hyprland
         run: |
