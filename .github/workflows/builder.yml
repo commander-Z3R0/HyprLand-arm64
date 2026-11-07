@@ -1,4 +1,4 @@
-name: Build Hyprland .deb (arm64 / Debian trixie)
+name: Build Hyprland .deb (arm64 / Debian)
 
 on:
   workflow_dispatch:
@@ -7,8 +7,12 @@ on:
         description: "Hyprland tag (e.g. v0.51.1)"
         required: true
         default: "v0.51.1"
+      base_image:
+        description: "Debian base image: debian:sid (recommended) or debian:trixie"
+        required: true
+        default: "debian:sid"
       wayland_protocols_version:
-        description: "wayland-protocols tag (must be >= 1.45)"
+        description: "wayland-protocols tag, only built if the distro one is < 1.45"
         required: true
         default: "1.45"
       create_release:
@@ -22,13 +26,16 @@ permissions:
 env:
   HYPRLAND_VERSION: ${{ inputs.hyprland_version }}
   WAYLAND_PROTOCOLS_VERSION: ${{ inputs.wayland_protocols_version }}
+  # Hyprland >= 0.51 needs GCC 15 (C++26 library features missing in GCC 14)
+  CC: gcc-15
+  CXX: g++-15
 
 jobs:
   build:
     # Native ARM64 runner (free for public repos). Avoids QEMU, which is very slow.
     runs-on: ubuntu-24.04-arm
     container:
-      image: debian:trixie   # gcc 14 (wayland-protocols is built from source below)
+      image: ${{ inputs.base_image }}
     defaults:
       run:
         shell: bash
@@ -42,7 +49,7 @@ jobs:
             build-essential cmake ninja-build meson gettext gettext-base \
             glslang-tools hwdata \
             libwayland-dev wayland-protocols libffi-dev libxml2-dev libglib2.0-dev \
-            libdrm-dev libgbm-dev libegl-dev libgles-dev libegl1-mesa-dev \
+            libdrm-dev libgbm-dev libegl-dev libgles-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxkbregistry-dev \
             libinput-dev libudev-dev libseat-dev libsystemd-dev \
             libpixman-1-dev libcairo2-dev libpango1.0-dev fontconfig libfontconfig-dev \
@@ -56,12 +63,35 @@ jobs:
             libavutil-dev libavcodec-dev libavformat-dev \
             libpci-dev libuuid1 uuid-dev
 
-      # Debian trixie ships wayland-protocols 1.44, Hyprland needs >= 1.45.
-      # It only contains protocol XML files, so it is needed at build time only
-      # (it is NOT staged into /out / the .deb).
-      - name: Build wayland-protocols from source
+      - name: Install GCC 15
         run: |
           set -euxo pipefail
+          . /etc/os-release
+          if [ "${VERSION_CODENAME:-}" = "trixie" ]; then
+            # GCC 15 is not in trixie: pull only the compiler from sid
+            echo "deb http://deb.debian.org/debian sid main" > /etc/apt/sources.list.d/sid.list
+            printf 'Package: *\nPin: release a=unstable\nPin-Priority: 100\n' > /etc/apt/preferences.d/sid
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              -t sid gcc-15 g++-15
+          else
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              gcc-15 g++-15
+          fi
+          gcc-15 --version
+          g++-15 --version
+
+      # Hyprland needs wayland-protocols >= 1.45. Only built if the distro one is older.
+      # It only contains protocol XML files, so it is needed at build time only
+      # (it is NOT staged into /out / the .deb).
+      - name: Build wayland-protocols from source (if needed)
+        run: |
+          set -euxo pipefail
+          if pkg-config --atleast-version=1.45 wayland-protocols; then
+            echo "System wayland-protocols is new enough, skipping"
+            exit 0
+          fi
           cd /tmp
           git clone --depth 1 --branch "${WAYLAND_PROTOCOLS_VERSION}" \
             https://gitlab.freedesktop.org/wayland/wayland-protocols.git
