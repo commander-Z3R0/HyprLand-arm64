@@ -7,6 +7,10 @@ on:
         description: "Hyprland tag (e.g. v0.51.1)"
         required: true
         default: "v0.51.1"
+      wayland_protocols_version:
+        description: "wayland-protocols tag (must be >= 1.45)"
+        required: true
+        default: "1.45"
       create_release:
         description: "Publish the .deb as a GitHub Release"
         type: boolean
@@ -17,13 +21,14 @@ permissions:
 
 env:
   HYPRLAND_VERSION: ${{ inputs.hyprland_version }}
+  WAYLAND_PROTOCOLS_VERSION: ${{ inputs.wayland_protocols_version }}
 
 jobs:
   build:
     # Native ARM64 runner (free for public repos). Avoids QEMU, which is very slow.
     runs-on: ubuntu-24.04-arm
     container:
-      image: debian:trixie   # gcc 14 + recent wayland-protocols
+      image: debian:trixie   # gcc 14 (wayland-protocols is built from source below)
     defaults:
       run:
         shell: bash
@@ -36,7 +41,7 @@ jobs:
             ca-certificates git curl wget xz-utils tar file pkg-config dpkg-dev \
             build-essential cmake ninja-build meson gettext gettext-base \
             glslang-tools hwdata \
-            libwayland-dev wayland-protocols libffi-dev libxml2-dev \
+            libwayland-dev wayland-protocols libffi-dev libxml2-dev libglib2.0-dev \
             libdrm-dev libgbm-dev libegl-dev libgles-dev libegl1-mesa-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxkbregistry-dev \
             libinput-dev libudev-dev libseat-dev libsystemd-dev \
@@ -50,6 +55,20 @@ jobs:
             libxcb-errors-dev libxcb-util-dev libx11-xcb-dev \
             libavutil-dev libavcodec-dev libavformat-dev \
             libpci-dev libuuid1 uuid-dev
+
+      # Debian trixie ships wayland-protocols 1.44, Hyprland needs >= 1.45.
+      # It only contains protocol XML files, so it is needed at build time only
+      # (it is NOT staged into /out / the .deb).
+      - name: Build wayland-protocols from source
+        run: |
+          set -euxo pipefail
+          cd /tmp
+          git clone --depth 1 --branch "${WAYLAND_PROTOCOLS_VERSION}" \
+            https://gitlab.freedesktop.org/wayland/wayland-protocols.git
+          cd wayland-protocols
+          meson setup build --prefix=/usr --buildtype=release -Dtests=false
+          meson install -C build
+          pkg-config --modversion wayland-protocols
 
       - name: Build hyprwm dependencies
         run: |
