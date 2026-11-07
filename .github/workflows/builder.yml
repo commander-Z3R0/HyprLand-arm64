@@ -49,7 +49,7 @@ jobs:
             build-essential cmake ninja-build meson gettext gettext-base \
             glslang-tools hwdata \
             libwayland-dev wayland-protocols libffi-dev libxml2-dev libglib2.0-dev \
-            libdrm-dev libgbm-dev libegl-dev libgles-dev \
+            libdrm-dev libgbm-dev libegl-dev libgles-dev libopengl-dev libgl-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxkbregistry-dev \
             libinput-dev libudev-dev libseat-dev libsystemd-dev \
             libpixman-1-dev libcairo2-dev libpango1.0-dev fontconfig libfontconfig-dev \
@@ -149,7 +149,8 @@ jobs:
 
             if [ -f CMakeLists.txt ]; then
               cmake -S . -B build -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+                -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+                -DOpenGL_GL_PREFERENCE=GLVND
               cmake --build build -j"$(nproc)"
               cmake --install build
               DESTDIR=/out cmake --install build
@@ -182,7 +183,8 @@ jobs:
           cd /tmp/hyprland
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DOpenGL_GL_PREFERENCE=GLVND
           cmake --build build -j"$(nproc)"
           cmake --install build
           DESTDIR=/out cmake --install build
